@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"path"
-	"strings"
 	"sync"
 )
 
@@ -34,10 +33,7 @@ func NewDownload(link, fileName, destFolder string) error {
 	if len(downloadingJobMap) >= MaxConcurrentDownloading {
 		return fmt.Errorf(ErrorMaxConcurrentJobReached)
 	}
-	cfg := torrent.NewDefaultClientConfig()
-	cfg.DataDir = DownloadTmpFolder
-	job := &DownloadJob{link: link, fileName: fileName, destFolder: destFolder, clientCfg: cfg}
-	downloadingJobMap[fileName] = job
+	job := createNewJob(link, fileName, destFolder)
 	go func() {
 		err := job.startToDownload()
 		delete(downloadingJobMap, fileName)
@@ -51,6 +47,15 @@ func NewDownload(link, fileName, destFolder string) error {
 	return nil
 }
 
+func createNewJob(link, fileName, destFolder string) *DownloadJob {
+	cfg := torrent.NewDefaultClientConfig()
+	cfg.DataDir = DownloadTmpFolder
+	cfg.NoUpload = true
+	job := &DownloadJob{link: link, fileName: fileName, destFolder: destFolder, clientCfg: cfg}
+	downloadingJobMap[fileName] = job
+	return job
+}
+
 func (job *DownloadJob) startToDownload() error {
 	torClient, err := torrent.NewClient(job.clientCfg)
 	defer torClient.Close()
@@ -60,25 +65,23 @@ func (job *DownloadJob) startToDownload() error {
 	tor, _ := torClient.AddMagnet(job.link)
 	<-tor.GotInfo()
 	tor.DownloadAll()
-	completed := torClient.WaitAll()
-	if completed {
-		for _, f := range tor.Files() {
-			srcPath := path.Join(DownloadTmpFolder, f.Path())
-			folderName := job.fileName[:strings.LastIndex(job.fileName, ".")]
-			destPath := path.Join(job.destFolder, folderName)
-			err = MoveFile(srcPath, destPath)
-			if err != nil {
-				return fmt.Errorf("failed to move downloaded file, cause: %s", err.Error())
-			}
+	torClient.WaitAll()
+	for _, f := range tor.Files() {
+		srcPath := path.Join(DownloadTmpFolder, f.Path())
+		destPath := path.Join(job.destFolder, f.Path())
+		err = MoveFile(srcPath, destPath)
+		if err != nil {
+			return fmt.Errorf("failed to move downloaded file, cause: %s", err.Error())
 		}
-		return nil
-	} else {
-		return fmt.Errorf("download not complete")
 	}
+	return nil
 }
 
 func MoveFile(sourcePath, destPath string) error {
 	inputFile, err := os.Open(sourcePath)
+	if os.IsNotExist(err) {
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("couldn't open source file: %s", err)
 	}
