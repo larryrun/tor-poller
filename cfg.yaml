@@ -1,0 +1,16 @@
+download-folder: ./
+items:
+  - name: Modern Family
+    type: itvfans
+    info: http://www.itvfans.com/ziyuan/1101002.html
+    cond:
+      startPoint:
+        session: 9
+        episode: 7
+  - name: Shameless
+    type: itvfans
+    info: http://www.itvfans.com/ziyuan/1076002.html
+    cond:
+      startPoint:
+        session: 8
+        episode: 1
