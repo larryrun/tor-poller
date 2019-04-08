@@ -67,7 +67,7 @@ func (finder *ITVFansFinder) ListAvailableItems() ([]*TargetItem, error) {
 				return
 			}
 
-			item := &TargetItem{Episode: episode}
+			item := &TargetItem{Episode: episode, Name: finder.Name}
 			magLinkDom := e.DOM.Find("a[href^=magnet]")
 			link, exists := magLinkDom.Attr("href")
 			if exists {

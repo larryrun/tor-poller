@@ -1,4 +1,5 @@
 download-folder: ./downloads
+temp-folder: ./temp_downloads
 items:
   - name: Shameless
     type: itvfans

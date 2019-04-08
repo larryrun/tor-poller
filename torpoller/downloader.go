@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"github.com/anacrolix/torrent"
 	"github.com/larryrun/tor-poller/torpoller/mags"
-	"io"
+	"io/ioutil"
 	"log"
 	"os"
+	"os/exec"
 	"path"
+	"path/filepath"
 	"sync"
 )
 
@@ -81,14 +83,20 @@ func (job *DownloadJob) startToDownload() error {
 	}
 	tor, _ := torClient.AddMagnet(job.item.Link)
 	<-tor.GotInfo()
+	for _, f := range tor.Files() {
+		absPath, err := filepath.Abs(filepath.Join(DownloadTmpFolder, f.Path()))
+		if err != nil {
+			panic(err)
+		}
+		log.Printf("Downloading file: %s", absPath)
+	}
 	tor.DownloadAll()
 	torClient.WaitAll()
 	torClient.Close()
 	log.Printf("completed downloading file: %s", job.key())
 
 	for _, f := range tor.Files() {
-		srcPath := path.Join(DownloadTmpFolder, f.Path())
-		err = MoveFile(srcPath, job.destFolder, f.Path())
+		err = MoveTempFileToDest(DownloadTmpFolder, f.Path(), job.destFolder)
 		if err != nil {
 			return fmt.Errorf("failed to move downloaded file, cause: %s", err.Error())
 		}
@@ -96,29 +104,60 @@ func (job *DownloadJob) startToDownload() error {
 	return nil
 }
 
-func MoveFile(srcPath, downloadFolder, episodeFolder string) error {
-	inputFile, err := os.Open(srcPath)
+func MoveTempFileToDest(tempFolder, tempFilePath, destFolder string) error {
+	tempFileAbsPath, err := filepath.Abs(filepath.Join(tempFolder, tempFilePath))
 	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("src file: %s does not exist", srcPath)
+		return fmt.Errorf("failed to get the abs path of the tempFile: %s", tempFileAbsPath)
+	}
+	_, err = os.Stat(tempFileAbsPath)
+	if err != nil {
+		return fmt.Errorf("failed to read fileInfo for tempFile: %s, cause: %s", tempFileAbsPath, err.Error())
+	}
+	downloadTmpFolderAbsPath, err := filepath.Abs(tempFolder)
+	if err != nil {
+		return fmt.Errorf("failed to get the abs path of the downloadTmpFolder: %s", tempFolder)
+	}
+	tempFileIsFolder := filepath.Dir(tempFileAbsPath) != downloadTmpFolderAbsPath
+	if tempFileIsFolder {
+		tempFileFolderPath := filepath.Dir(tempFilePath)
+		destFileFolderPath := filepath.Join(destFolder, tempFileFolderPath)
+		//this means the downloaded item is a folder, we need to make sure the folder exists
+		if err := os.MkdirAll(destFileFolderPath, 0777); err != nil {
+			return fmt.Errorf("failed to create item folder: %s, err: %s", destFileFolderPath, err.Error())
 		}
-		return fmt.Errorf("couldn't open source file: %s", err)
-	}
-	outputFile, err := os.Create(destPath)
-	if err != nil {
-		inputFile.Close()
-		return fmt.Errorf("couldn't open dest file: %s", err)
-	}
-	defer outputFile.Close()
-	_, err = io.Copy(outputFile, inputFile)
-	inputFile.Close()
-	if err != nil {
-		return fmt.Errorf("writing to output file failed: %s", err)
-	}
-	// The copy was successful, so now delete the original file
-	err = os.Remove(srcPath)
-	if err != nil {
-		return fmt.Errorf("failed removing original file: %s", err)
+		log.Printf("Moving from %s to %s", tempFileAbsPath, destFileFolderPath)
+		if err := exec.Command("cp", "-R", tempFileAbsPath, destFileFolderPath).Run(); err != nil {
+			return fmt.Errorf("failed to cp tempFolder %s to dest folder: %s, casue: %v", tempFileAbsPath, destFileFolderPath, err.Error())
+		}
+		log.Printf("File moved, deleting the temp file: %s", tempFileAbsPath)
+		if err := os.RemoveAll(tempFileAbsPath); err != nil {
+			log.Printf("failed to remove tempFile: %s, cause: %s", tempFileAbsPath, err.Error())
+		}
+		log.Printf("Temp file removed")
+
+		tempFileFolderAbsPath, err := filepath.Abs(path.Join(tempFolder, tempFileFolderPath))
+		if err != nil {
+			log.Printf("failed to get the abs path of the tempFileFolder: %s", tempFileFolderPath)
+		}
+		tempFileFolderFileInfos, err := ioutil.ReadDir(tempFileFolderAbsPath)
+		if err != nil {
+			log.Printf("failed to read tempFileFolderInfo: %s, cause: %v", tempFileFolderAbsPath, err)
+			return nil
+		}
+		if len(tempFileFolderFileInfos) == 0 {
+			log.Printf("TempFileFolder %s is empty now, removing it", tempFileFolderAbsPath)
+			err := os.Remove(tempFileFolderAbsPath)
+			if err != nil {
+				log.Printf("failed to remove tempFileFolder: %s, cause: %v", tempFileFolderAbsPath, err)
+			}
+		}
+	} else {
+		if err := exec.Command("cp", tempFileAbsPath, destFolder).Run(); err != nil {
+			return fmt.Errorf("failed to cp tempFile %s to dest folder: %s, cause: %s", tempFileAbsPath, destFolder, err.Error())
+		}
+		if err := os.RemoveAll(tempFileAbsPath); err != nil {
+			log.Printf("failed to remove tempFile: %s, cause: %s", tempFileAbsPath, err.Error())
+		}
 	}
 	return nil
 }
