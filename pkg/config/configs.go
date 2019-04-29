@@ -1,4 +1,4 @@
-package torpoller
+package config
 
 import (
 	"fmt"
@@ -6,11 +6,11 @@ import (
 	"io/ioutil"
 )
 
-var configPath string
-
 type Config struct {
-	DownloadFolder string                 `yaml:"download-folder"`
-	Items          []ItemInfo             `yaml:"items"`
+	DownloadFolder     string     `yaml:"download-folder"`
+	TmpFolder          string     `yaml:"temp-folder"`
+	ConcurrentDownload uint       `yaml:"concurrent-download"`
+	Items              []ItemInfo `yaml:"items"`
 }
 
 type ItemInfo struct {
@@ -20,11 +20,7 @@ type ItemInfo struct {
 	Extra map[string]interface{} `yaml:"extra"`
 }
 
-func SetConfigPath(path string) {
-	configPath = path
-}
-
-func ReadConfig() (*Config, error) {
+func ReadConfig(configPath string) (*Config, error) {
 	bytes, err := ioutil.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file, cause: %s", err.Error())
@@ -36,4 +32,3 @@ func ReadConfig() (*Config, error) {
 	}
 	return cfg, nil
 }
-

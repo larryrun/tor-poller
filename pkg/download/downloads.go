@@ -1,9 +1,11 @@
-package torpoller
+package download
 
 import (
+	"bytes"
 	"fmt"
 	"github.com/anacrolix/torrent"
-	"github.com/larryrun/tor-poller/torpoller/mags"
+	"github.com/larryrun/tor-poller/pkg/config"
+	"github.com/larryrun/tor-poller/pkg/mags"
 	"io/ioutil"
 	"log"
 	"os"
@@ -13,10 +15,9 @@ import (
 	"sync"
 )
 
-const DownloadTmpFolder = "./download_tmp"
-const MaxConcurrentDownloading = 2
 const ErrorMaxConcurrentJobReached = "max concurrent job count reached"
 const ErrorSameEpisodeDownloadExists = "same episode download exists"
+
 
 var jobMapMutex sync.Mutex
 var downloadingJobMap map[string]*DownloadJob
@@ -35,18 +36,18 @@ func (job *DownloadJob) key() string {
 	return fmt.Sprintf("%s:%s", job.item.Name, job.item.Episode.String())
 }
 
-func NewDownload(item *mags.TargetItem, destFolder string) error {
+func NewDownload(conf *config.Config, item *mags.TargetItem, destFolder string) error {
 	jobMapMutex.Lock()
 	defer jobMapMutex.Unlock()
 
-	if len(downloadingJobMap) >= MaxConcurrentDownloading {
+	if len(downloadingJobMap) >= int(conf.ConcurrentDownload) {
 		return fmt.Errorf(ErrorMaxConcurrentJobReached)
 	}
 	_, ok := downloadingJobMap[item.Name+item.Episode.String()]
 	if ok {
 		return fmt.Errorf(ErrorSameEpisodeDownloadExists)
 	}
-	job, err := createNewJob(item, destFolder)
+	job, err := createNewJob(conf, item, destFolder)
 	if err != nil {
 		return err
 	}
@@ -62,9 +63,9 @@ func NewDownload(item *mags.TargetItem, destFolder string) error {
 	return nil
 }
 
-func createNewJob(item *mags.TargetItem, destFolder string) (*DownloadJob, error) {
+func createNewJob(conf *config.Config, item *mags.TargetItem, destFolder string) (*DownloadJob, error) {
 	cfg := torrent.NewDefaultClientConfig()
-	cfg.DataDir = DownloadTmpFolder
+	cfg.DataDir = conf.TmpFolder
 	cfg.NoUpload = true
 	job := &DownloadJob{destFolder: destFolder, item: item, clientCfg: cfg}
 	_, ok := downloadingJobMap[job.key()]
@@ -84,7 +85,7 @@ func (job *DownloadJob) startToDownload() error {
 	tor, _ := torClient.AddMagnet(job.item.Link)
 	<-tor.GotInfo()
 	for _, f := range tor.Files() {
-		absPath, err := filepath.Abs(filepath.Join(DownloadTmpFolder, f.Path()))
+		absPath, err := filepath.Abs(filepath.Join(job.clientCfg.DataDir, f.Path()))
 		if err != nil {
 			panic(err)
 		}
@@ -96,7 +97,7 @@ func (job *DownloadJob) startToDownload() error {
 	log.Printf("completed downloading file: %s", job.key())
 
 	for _, f := range tor.Files() {
-		err = MoveTempFileToDest(DownloadTmpFolder, f.Path(), job.destFolder)
+		err = MoveTempFileToDest(job.clientCfg.DataDir, f.Path(), job.destFolder)
 		if err != nil {
 			return fmt.Errorf("failed to move downloaded file, cause: %s", err.Error())
 		}
@@ -109,16 +110,11 @@ func MoveTempFileToDest(tempFolder, tempFilePath, destFolder string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get the abs path of the tempFile: %s", tempFileAbsPath)
 	}
-	_, err = os.Stat(tempFileAbsPath)
+	tempFileInfo, err := os.Stat(tempFileAbsPath)
 	if err != nil {
-		return fmt.Errorf("failed to read fileInfo for tempFile: %s, cause: %s", tempFileAbsPath, err.Error())
+		return fmt.Errorf("failed to read tempFileAbsPath, error: %v", err)
 	}
-	downloadTmpFolderAbsPath, err := filepath.Abs(tempFolder)
-	if err != nil {
-		return fmt.Errorf("failed to get the abs path of the downloadTmpFolder: %s", tempFolder)
-	}
-	tempFileIsFolder := filepath.Dir(tempFileAbsPath) != downloadTmpFolderAbsPath
-	if tempFileIsFolder {
+	if tempFileInfo.IsDir() {
 		tempFileFolderPath := filepath.Dir(tempFilePath)
 		destFileFolderPath := filepath.Join(destFolder, tempFileFolderPath)
 		//this means the downloaded item is a folder, we need to make sure the folder exists
@@ -126,8 +122,11 @@ func MoveTempFileToDest(tempFolder, tempFilePath, destFolder string) error {
 			return fmt.Errorf("failed to create item folder: %s, err: %s", destFileFolderPath, err.Error())
 		}
 		log.Printf("Moving from %s to %s", tempFileAbsPath, destFileFolderPath)
-		if err := exec.Command("cp", "-R", tempFileAbsPath, destFileFolderPath).Run(); err != nil {
-			return fmt.Errorf("failed to cp tempFolder %s to dest folder: %s, casue: %v", tempFileAbsPath, destFileFolderPath, err.Error())
+		cpCmd := exec.Command("cp", "-R", tempFileAbsPath, destFileFolderPath)
+		var out bytes.Buffer
+		cpCmd.Stdout = &out
+		if err := cpCmd.Run(); err != nil {
+			return fmt.Errorf("failed to copy tempFolder %s to dest folder: %s, error: %v, output: %s", tempFileAbsPath, destFileFolderPath, err, out.String())
 		}
 		log.Printf("File moved, deleting the temp file: %s", tempFileAbsPath)
 		if err := os.RemoveAll(tempFileAbsPath); err != nil {
@@ -152,8 +151,20 @@ func MoveTempFileToDest(tempFolder, tempFilePath, destFolder string) error {
 			}
 		}
 	} else {
-		if err := exec.Command("cp", tempFileAbsPath, destFolder).Run(); err != nil {
-			return fmt.Errorf("failed to cp tempFile %s to dest folder: %s, cause: %s", tempFileAbsPath, destFolder, err.Error())
+		downloadedFileDestPath := path.Join(destFolder, tempFilePath)
+		downloadedFileFolderPath := path.Dir(downloadedFileDestPath);
+		var out bytes.Buffer
+		mkdirCmd := exec.Command("mkdir", "-p", downloadedFileFolderPath)
+		mkdirCmd.Stdout = &out
+		if err := mkdirCmd.Run(); err != nil {
+			return fmt.Errorf("failed to mkdir for dest file %s, error: %v, output: %s", downloadedFileDestPath, err, out.String())
+		}
+
+		out = bytes.Buffer{}
+		cpCmd := exec.Command("cp", tempFileAbsPath, downloadedFileDestPath)
+		cpCmd.Stdout = &out
+		if err := cpCmd.Run(); err != nil {
+			return fmt.Errorf("failed to cp tempFile %s to dest path: %s, error: %v, output: %s", tempFileAbsPath, downloadedFileDestPath, err, out.String())
 		}
 		if err := os.RemoveAll(tempFileAbsPath); err != nil {
 			log.Printf("failed to remove tempFile: %s, cause: %s", tempFileAbsPath, err.Error())
@@ -161,3 +172,4 @@ func MoveTempFileToDest(tempFolder, tempFilePath, destFolder string) error {
 	}
 	return nil
 }
+

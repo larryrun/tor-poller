@@ -1,4 +1,4 @@
-package torpoller
+package download
 
 import (
 	"github.com/stretchr/testify/assert"
